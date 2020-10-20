@@ -8,7 +8,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,7 +28,6 @@ namespace TwitchLeecher.Services.Services
     {
         #region Constants
 
-        private const string KRAKEN_URL = "https://api.twitch.tv/kraken";
         private const string VIDEO_URL = "https://api.twitch.tv/kraken/videos/{0}";
         private const string GAMES_URL = "https://api.twitch.tv/kraken/games/top";
         private const string USERS_URL = "https://api.twitch.tv/kraken/users";
@@ -47,11 +45,11 @@ namespace TwitchLeecher.Services.Services
 
         private const int TWITCH_MAX_LOAD_LIMIT = 100;
 
-        private const string TWITCH_CLIENT_ID = "37v97169hnj8kaoq8fs3hzz8v6jezdj";
         private const string TWITCH_CLIENT_ID_HEADER = "Client-ID";
-        private const string TWITCH_V5_ACCEPT = "application/vnd.twitchtv.v5+json";
+        private const string TWITCH_CLIENT_ID = "37v97169hnj8kaoq8fs3hzz8v6jezdj";
+        private const string TWITCH_CLIENT_ID_WEB = "kimne78kx3ncx6brgo4mv6wki5h1ko";
         private const string TWITCH_V5_ACCEPT_HEADER = "Accept";
-        private const string TWITCH_AUTHORIZATION_HEADER = "Authorization";
+        private const string TWITCH_V5_ACCEPT = "application/vnd.twitchtv.v5+json";
 
         #endregion Constants
 
@@ -71,9 +69,6 @@ namespace TwitchLeecher.Services.Services
 
         private ConcurrentDictionary<string, DownloadTask> _downloadTasks;
         private Dictionary<string, Uri> _gameThumbnails;
-        private TwitchAuthInfo _twitchAuthInfo;
-
-        private readonly string _appDir;
 
         private readonly object _changeDownloadLockObject;
 
@@ -102,8 +97,6 @@ namespace TwitchLeecher.Services.Services
 
             _downloadTasks = new ConcurrentDictionary<string, DownloadTask>();
 
-            _appDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-
             _changeDownloadLockObject = new object();
 
             _downloadTimer = new Timer(DownloadTimerCallback, null, 0, TIMER_INTERVALL);
@@ -114,14 +107,6 @@ namespace TwitchLeecher.Services.Services
         #endregion Constructors
 
         #region Properties
-
-        public bool IsAuthorized
-        {
-            get
-            {
-                return _twitchAuthInfo != null;
-            }
-        }
 
         public ObservableCollection<TwitchVideo> Videos
         {
@@ -175,7 +160,7 @@ namespace TwitchLeecher.Services.Services
 
         #region Methods
 
-        private WebClient CreateTwitchWebClient()
+        private WebClient CreatePublicApiWebClient()
         {
             WebClient wc = new WebClient();
             wc.Headers.Add(TWITCH_CLIENT_ID_HEADER, TWITCH_CLIENT_ID);
@@ -184,14 +169,12 @@ namespace TwitchLeecher.Services.Services
             return wc;
         }
 
-        private WebClient CreateAuthorizedTwitchWebClient()
+        private WebClient CreatePrivateApiWebClient()
         {
-            WebClient wc = CreateTwitchWebClient();
-
-            if (IsAuthorized)
-            {
-                wc.Headers.Add(TWITCH_AUTHORIZATION_HEADER, "OAuth " + _twitchAuthInfo.AccessToken);
-            }
+            WebClient wc = new WebClient();
+            wc.Headers.Add(TWITCH_CLIENT_ID_HEADER, TWITCH_CLIENT_ID_WEB);
+            wc.Headers.Add(TWITCH_V5_ACCEPT_HEADER, TWITCH_V5_ACCEPT);
+            wc.Encoding = Encoding.UTF8;
 
             return wc;
         }
@@ -203,7 +186,7 @@ namespace TwitchLeecher.Services.Services
                 throw new ArgumentNullException(nameof(id));
             }
 
-            using (WebClient webClient = CreateAuthorizedTwitchWebClient())
+            using (WebClient webClient = CreatePrivateApiWebClient())
             {
                 string accessTokenStr = webClient.DownloadString(string.Format(ACCESS_TOKEN_URL, id));
 
@@ -281,7 +264,7 @@ namespace TwitchLeecher.Services.Services
                 throw new ArgumentNullException(nameof(channel));
             }
 
-            using (WebClient webClient = CreateTwitchWebClient())
+            using (WebClient webClient = CreatePublicApiWebClient())
             {
                 webClient.QueryString.Add("login", channel);
 
@@ -312,7 +295,7 @@ namespace TwitchLeecher.Services.Services
 
                             if (!string.IsNullOrWhiteSpace(id))
                             {
-                                using (WebClient webClientChannel = CreateTwitchWebClient())
+                                using (WebClient webClientChannel = CreatePublicApiWebClient())
                                 {
                                     try
                                     {
@@ -336,55 +319,6 @@ namespace TwitchLeecher.Services.Services
 
                 return null;
             }
-        }
-
-        public bool Authorize(string accessToken)
-        {
-            if (!string.IsNullOrWhiteSpace(accessToken))
-            {
-                using (WebClient webClient = CreateTwitchWebClient())
-                {
-                    webClient.Headers.Add(TWITCH_AUTHORIZATION_HEADER, "OAuth " + accessToken);
-
-                    string result = webClient.DownloadString(KRAKEN_URL);
-
-                    JObject verifyRequestJson = JObject.Parse(result);
-
-                    if (verifyRequestJson != null)
-                    {
-                        JObject tokenJson = verifyRequestJson.Value<JObject>("token");
-
-                        if (tokenJson != null)
-                        {
-                            bool valid = tokenJson.Value<bool>("valid");
-
-                            if (valid)
-                            {
-                                string username = tokenJson.Value<string>("user_name");
-                                string clientId = tokenJson.Value<string>("client_id");
-
-                                if (!string.IsNullOrWhiteSpace(username) &&
-                                    !string.IsNullOrWhiteSpace(clientId) &&
-                                    clientId.Equals(TWITCH_CLIENT_ID, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    _twitchAuthInfo = new TwitchAuthInfo(accessToken, username);
-                                    FireIsAuthorizedChanged();
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            RevokeAuthorization();
-            return false;
-        }
-
-        public void RevokeAuthorization()
-        {
-            _twitchAuthInfo = null;
-            FireIsAuthorizedChanged();
         }
 
         public void Search(SearchParameters searchParams)
@@ -459,7 +393,7 @@ namespace TwitchLeecher.Services.Services
 
             do
             {
-                using (WebClient webClient = CreateTwitchWebClient())
+                using (WebClient webClient = CreatePublicApiWebClient())
                 {
                     webClient.QueryString.Add("broadcast_type", broadcastTypeParam);
                     webClient.QueryString.Add("limit", TWITCH_MAX_LOAD_LIMIT.ToString());
@@ -609,7 +543,7 @@ namespace TwitchLeecher.Services.Services
 
             for (int i = 0; i < segments.Length; i++)
             {
-                if (segments[i].Equals("videos/", StringComparison.OrdinalIgnoreCase))
+                if (segments[i].Equals("video/", StringComparison.OrdinalIgnoreCase) || segments[i].Equals("videos/", StringComparison.OrdinalIgnoreCase))
                 {
                     if (segments.Length > (i + 1))
                     {
@@ -635,7 +569,7 @@ namespace TwitchLeecher.Services.Services
 
         private TwitchVideo GetTwitchVideoFromId(int id)
         {
-            using (WebClient webClient = CreateTwitchWebClient())
+            using (WebClient webClient = CreatePublicApiWebClient())
             {
                 try
                 {
@@ -878,7 +812,7 @@ namespace TwitchLeecher.Services.Services
 
         private string RetrievePlaylistUrlForQuality(Action<string> log, TwitchVideoQuality quality, string vodId, VodAuthInfo vodAuthInfo)
         {
-            using (WebClient webClient = CreateAuthorizedTwitchWebClient())
+            using (WebClient webClient = CreatePrivateApiWebClient())
             {
                 webClient.Headers.Add("Accept", "*/*");
                 webClient.Headers.Add("Accept-Encoding", "gzip, deflate, br");
@@ -1201,7 +1135,7 @@ namespace TwitchLeecher.Services.Services
 
                 do
                 {
-                    using (WebClient webClient = CreateTwitchWebClient())
+                    using (WebClient webClient = CreatePublicApiWebClient())
                     {
                         webClient.QueryString.Add("limit", TWITCH_MAX_LOAD_LIMIT.ToString());
                         webClient.QueryString.Add("offset", offset.ToString());
@@ -1347,15 +1281,6 @@ namespace TwitchLeecher.Services.Services
             }
 
             return false;
-        }
-
-        private void FireIsAuthorizedChanged()
-        {
-            _runtimeDataService.RuntimeData.AccessToken = _twitchAuthInfo?.AccessToken;
-            _runtimeDataService.Save();
-
-            FirePropertyChanged(nameof(IsAuthorized));
-            _eventAggregator.GetEvent<IsAuthorizedChangedEvent>().Publish(IsAuthorized);
         }
 
         private void FireVideosCountChanged()
